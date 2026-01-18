@@ -118,6 +118,18 @@ impl ReportHandler for DiagnosticRenderer {
             }
         }
 
+        let mut current = diagnostic.source();
+        while let Some(cause) = current {
+            // We split lines in case a single error message has newlines
+            annotations.push(format!(
+                "{} {}",
+                "cause:".bold().red(),
+                cause.to_string().dimmed()
+            ));
+            // Move to the next error in the chain
+            current = cause.source();
+        }
+
         // Prepare tree characters
         let branch = " ├─›";
         let corner = " ╰─›";

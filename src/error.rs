@@ -9,18 +9,6 @@ use std::sync::atomic::AtomicBool;
 
 pub static ENABLE_DEBUG: AtomicBool = AtomicBool::new(false);
 
-/// Print an error.
-#[macro_export]
-macro_rules! errorln {
-    ($($arg:tt)*) => { diagnostic!($crate::error::Severity::Error; $($arg)*); }
-}
-
-/// Print an informational note.
-#[macro_export]
-macro_rules! noteln {
-    ($($arg:tt)*) => { diagnostic!($crate::error::Severity::Note; $($arg)*); }
-}
-
 /// Print debug information. Omitted in release builds.
 #[macro_export]
 #[cfg(debug_assertions)]
