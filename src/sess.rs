@@ -25,6 +25,7 @@ use async_recursion::async_recursion;
 use futures::future::join_all;
 use futures::TryFutureExt;
 use indexmap::{IndexMap, IndexSet};
+use miette::{bail, ensure, Context, IntoDiagnostic, Result};
 use semver::Version;
 use tokio::sync::Semaphore;
 use typed_arena::Arena;
@@ -32,7 +33,6 @@ use typed_arena::Arena;
 use crate::cli::read_manifest;
 use crate::config::{self, Config, Manifest, PartialManifest};
 use crate::diagnostic::{Diagnostics, Warnings};
-use crate::error::*;
 use crate::git::Git;
 use crate::src::SourceGroup;
 use crate::target::TargetSet;
@@ -187,10 +187,10 @@ impl<'ctx> Session<'ctx> {
                     v.iter()
                         .map(|name| match names.get(name) {
                             Some(id) => Ok(*id),
-                            None => Err(Error::new(format!(
+                            None => bail!(
                                 "Failed to match dependency {}, please run `bender update`!",
                                 name
-                            ))),
+                            ),
                         })
                         .collect::<Result<_>>(),
                 )
@@ -210,13 +210,12 @@ impl<'ctx> Session<'ctx> {
                 graph.keys().map(|&id| (id, 0)).collect();
             let mut pending = IndexSet::new();
             for name in self.manifest.dependencies.keys() {
-                if !(names.contains_key(name)) {
-                    return Err(Error::new(format!(
-                        "`Bender.yml` contains dependency `{}` but `Bender.lock` does not.\n\
-                        \tYou may need to run `bender update`.",
-                        name
-                    )));
-                }
+                ensure!(
+                    names.contains_key(name),
+                    "`Bender.yml` contains dependency `{}` but `Bender.lock` does not.\n\
+                    \tYou may need to run `bender update`.",
+                    name
+                );
             }
             pending.extend(self.manifest.dependencies.keys().map(|name| names[name]));
             let mut cyclic = false;
@@ -242,11 +241,11 @@ impl<'ctx> Session<'ctx> {
                     for element in pending.iter() {
                         pend_str.push(self.dependency_name(*element));
                     }
-                    return Err(Error::new(format!(
+                    bail!(
                         "a cyclical dependency was discovered, likely relates to one of {:?}.\n\
                         \tPlease ensure no dependency loops.",
                         pend_str
-                    )));
+                    );
                 }
             }
             debugln!("sess: topological ranks {:#?}", ranks);
@@ -299,14 +298,17 @@ impl<'ctx> Session<'ctx> {
     ///
     /// Returns an error if the dependency does not exist.
     pub fn dependency_with_name(&self, name: &str) -> Result<DependencyRef> {
-        let result = self.names.lock().unwrap().get(name).copied();
-        match result {
-            Some(id) => Ok(id),
-            None => Err(Error::new(format!(
-                "Dependency `{}` does not exist. Did you forget to add it to the manifest?",
-                name
-            ))),
-        }
+        self.names
+            .lock()
+            .unwrap()
+            .get(name)
+            .copied()
+            .with_context(|| {
+                format!(
+                    "Dependency `{}` does not exist. Did you forget to add it to the manifest?",
+                    name
+                )
+            })
     }
 
     /// Internalize a path.
@@ -525,15 +527,9 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
             .join("db")
             .join(db_name);
         let db_dir = self.sess.intern_path(db_dir);
-        match std::fs::create_dir_all(db_dir) {
-            Ok(_) => (),
-            Err(cause) => {
-                return Err(Error::chain(
-                    format!("Failed to create git database directory {:?}.", db_dir),
-                    cause,
-                ))
-            }
-        };
+        std::fs::create_dir_all(db_dir)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("Cannot create git database directory {:?}.", db_dir))?;
         let git = Git::new(
             db_dir,
             &self.sess.config.git,
@@ -546,43 +542,48 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
 
         // Either initialize the repository or update it if needed.
         if !db_dir.join("config").exists() {
-            if self.sess.local_only {
-                return Err(Error::new(
-                    "Bender --local argument set, unable to initialize git dependency. \n\
-                    \tPlease update without --local, or provide a path to the missing dependency.",
-                ));
-            }
+            ensure!(
+                !self.sess.local_only,
+                "Bender --local argument set, unable to initialize git dependency. \n\
+                \tPlease update without --local, or provide a path to the missing dependency."
+            );
             // Initialize.
             self.sess.stats.num_database_init.increment();
             // TODO MICHAERO: May need throttle
             stageln!("Cloning", "{} ({})", name2, url2);
             git.clone()
                 .spawn_with(|c| c.arg("init").arg("--bare"))
-                .await?;
+                .await
+                .wrap_err_with(|| format!("Failed to initialize git database in {:?}.", db_dir))?;
             git.clone()
                 .spawn_with(|c| c.arg("remote").arg("add").arg("origin").arg(url))
-                .await?;
-            git.clone()
-                .fetch("origin")
-                .and_then(|_| async {
-                    if let Some(reference) = fetch_ref {
-                        git.clone().fetch_ref("origin", reference).await
-                    } else {
-                        Ok(())
-                    }
-                })
                 .await
-                .map_err(move |cause| {
-                    Warnings::GitInitFailed {
-                        is_ssh: url3.contains("git@"),
-                    }
-                    .emit();
-                    Error::chain(
-                        format!("Failed to initialize git database in {:?}.", db_dir),
-                        cause,
+                .wrap_err_with(|| {
+                    format!(
+                        "Failed to add remote origin to git database in {:?}.",
+                        db_dir
                     )
-                })
-                .map(move |_| git)
+                })?;
+            let fetch_result: Result<()> = async {
+                git.clone().fetch("origin").await?;
+                if let Some(reference) = fetch_ref {
+                    git.clone().fetch_ref("origin", reference).await?;
+                }
+                Ok(())
+            }
+            .await;
+
+            match fetch_result {
+                Ok(_) => Ok(git),
+                Err(cause) => {
+                    if url3.contains("git@") {
+                        Warnings::GitInitFailed { is_ssh: true }.emit();
+                    }
+                    Err(cause).wrap_err_with(|| {
+                        format!("Failed to fetch updates for git database in {:?}.", db_dir)
+                    })
+                }
+            }
         } else {
             // Update if the manifest has been modified since the last fetch.
             let db_mtime = try_modification_time(db_dir.join("FETCH_HEAD"));
@@ -593,27 +594,27 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
             self.sess.stats.num_database_fetch.increment();
             // TODO MICHAERO: May need throttle
             stageln!("Fetching", "{} ({})", name2, url2);
-            git.clone()
-                .fetch("origin")
-                .and_then(|_| async {
-                    if let Some(reference) = fetch_ref {
-                        git.clone().fetch_ref("origin", reference).await
-                    } else {
-                        Ok(())
+            git.clone().fetch("origin").await?;
+
+            let fetch_result: Result<()> = async {
+                if let Some(reference) = fetch_ref {
+                    git.clone().fetch_ref("origin", reference).await?;
+                }
+                Ok(())
+            }
+            .await;
+
+            match fetch_result {
+                Ok(_) => Ok(git),
+                Err(cause) => {
+                    if url3.contains("git@") {
+                        Warnings::GitInitFailed { is_ssh: true }.emit();
                     }
-                })
-                .await
-                .map_err(move |cause| {
-                    Warnings::GitInitFailed {
-                        is_ssh: url3.contains("git@"),
-                    }
-                    .emit();
-                    Error::chain(
-                        format!("Failed to update git database in {:?}.", db_dir),
-                        cause,
-                    )
-                })
-                .map(move |_| git)
+                    Err(cause).wrap_err_with(|| {
+                        format!("Failed to fetch updates for git database in {:?}.", db_dir)
+                    })
+                }
+            }
         }
     }
 
@@ -907,12 +908,9 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
         };
         if path.exists() && clear == CheckoutState::ToClone {
             debugln!("checkout_git: clear checkout {:?}", path);
-            std::fs::remove_dir_all(path).map_err(|cause| {
-                Error::chain(
-                    format!("Failed to remove checkout directory {:?}.", path),
-                    cause,
-                )
-            })
+            std::fs::remove_dir_all(path)
+                .into_diagnostic()
+                .wrap_err_with(|| format!("Failed to remove checkout directory {:?}.", path))
         } else {
             Ok(())
         }?;
@@ -960,13 +958,10 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
                         .map_err(|cause| {
                             Warnings::RevisionNotFound(revision.to_string(), name.to_string())
                                 .emit();
-                            Error::chain(
-                                format!(
-                                    "Failed to checkout commit {} for {} given in Bender.lock.\n",
-                                    revision, name
-                                ),
-                                cause,
-                            )
+                            cause.wrap_err(format!(
+                                "Failed to checkout commit {} for {} given in Bender.lock.",
+                                revision, name
+                            ))
                         })
                         .await
                 }
@@ -1048,15 +1043,16 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
 
                     if let Some(full_sub_data) = sub_data.clone() {
                         if !tmp_path.exists() {
-                            std::fs::create_dir_all(tmp_path.clone())?;
+                            std::fs::create_dir_all(tmp_path.clone()).into_diagnostic()?;
                         }
                         let mut sub_file = std::fs::OpenOptions::new()
                             .write(true)
                             .truncate(true)
                             .create(true)
-                            .open(tmp_path.join(format!("{}_manifest.yml", dep.0)))?;
-                        writeln!(&mut sub_file, "{}", full_sub_data)?;
-                        sub_file.flush()?;
+                            .open(tmp_path.join(format!("{}_manifest.yml", dep.0)))
+                            .into_diagnostic()?;
+                        writeln!(&mut sub_file, "{}", full_sub_data).into_diagnostic()?;
+                        sub_file.flush().into_diagnostic()?;
                     }
 
                     *dep.1 = config::Dependency::Path(sub_dep_path.clone(), Vec::new());
@@ -1065,25 +1061,21 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
                     let _manifest: Result<_> = match sub_data {
                         Some(data) => {
                             let partial: config::PartialManifest = serde_yaml_ng::from_str(&data)
-                                .map_err(|cause| {
-                                Error::chain(
+                                .into_diagnostic()
+                                .wrap_err_with(|| {
                                     format!(
                                         "Syntax error in manifest of dependency `{}` at \
-                                                 revision `{}`.",
+                                             revision `{}`.",
                                         dep.0, used_git_rev
-                                    ),
-                                    cause,
-                                )
-                            })?;
-                            let mut full =
-                                partial.validate_ignore_sources("", true).map_err(|cause| {
-                                    Error::chain(
-                                        format!(
-                                            "Error in manifest of dependency `{}` at revision \
-                                             `{}`.",
-                                            dep.0, used_git_rev
-                                        ),
-                                        cause,
+                                    )
+                                })?;
+                            let mut full = partial
+                                .validate_ignore_sources("", true)
+                                .wrap_err_with(|| {
+                                    format!(
+                                        "Error in manifest of dependency `{}` at revision \
+                                     `{}`.",
+                                        dep.0, used_git_rev
                                     )
                                 })?;
                             self.sub_dependency_fixing(
@@ -1170,13 +1162,11 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
                             .join("tmp")
                             .join(format!("{}_manifest.yml", dep.name)),
                     )
-                    .map_err(|cause| {
-                        Error::chain(format!("Cannot open manifest {:?}.", path), cause)
-                    })?;
-                    let partial: PartialManifest =
-                        serde_yaml_ng::from_reader(file).map_err(|cause| {
-                            Error::chain(format!("Syntax error in manifest {:?}.", path), cause)
-                        })?;
+                    .into_diagnostic()
+                    .wrap_err_with(|| format!("Cannot open manifest {:?}.", path))?;
+                    let partial: PartialManifest = serde_yaml_ng::from_reader(file)
+                        .into_diagnostic()
+                        .wrap_err_with(|| format!("Syntax error in manifest {:?}.", path))?;
 
                     match partial.validate_ignore_sources("", true) {
                         Ok(m) => {
@@ -1202,10 +1192,11 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
                                     }
                                     .emit();
                                 } else {
-                                    return Err(Error::new(format!(
+                                    bail!(
                                         "[E32] Path {:?} for dependency {:?} does not exist.",
-                                        path, dep.name
-                                    )));
+                                        path,
+                                        dep.name
+                                    );
                                 }
                             }
                         }
@@ -1233,27 +1224,24 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
                 let manifest: Result<_> = match data {
                     Some(data) => {
                         let partial: config::PartialManifest = serde_yaml_ng::from_str(&data)
-                            .map_err(|cause| {
-                                Error::chain(
-                                    format!(
-                                        "Syntax error in manifest of dependency `{}` at \
-                                             revision `{}`.",
-                                        dep_name, rev
-                                    ),
-                                    cause,
+                            .into_diagnostic()
+                            .wrap_err_with(|| {
+                                format!(
+                                    "Syntax error in manifest of dependency `{}` at \
+                                     `{}'.",
+                                    dep_name, rev
                                 )
                             })?;
                         let mut full =
-                            partial.validate_ignore_sources("", true).map_err(|cause| {
-                                Error::chain(
+                            partial
+                                .validate_ignore_sources("", true)
+                                .wrap_err_with(|| {
                                     format!(
                                         "Error in manifest of dependency `{}` at revision \
-                                         `{}`.",
+                                 `{}`.",
                                         dep_name, rev
-                                    ),
-                                    cause,
-                                )
-                            })?;
+                                    )
+                                })?;
 
                         // Add base path to path dependencies within git repositories
                         self.sub_dependency_fixing(
@@ -1618,12 +1606,12 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
                     },
                 );
                 if let Some(existing) = existing {
-                    return Err(Error::new(format!(
+                    bail!(
                         "Plugin `{}` declared by multiple packages (`{}` and `{}`).",
                         name,
                         self.sess.dependency_name(existing.package),
                         self.sess.dependency_name(package),
-                    )));
+                    );
                 }
             }
         }
@@ -1639,12 +1627,11 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
                 },
             );
             if let Some(existing) = existing {
-                return Err(Error::new(format!(
-                    "Plugin `{}` declared by multiple packages (`{}` and `{}`).",
+                bail!(
+                    "Plugin `{}` declared by multiple packages (`{}` and `root`).",
                     name,
                     self.sess.dependency_name(existing.package),
-                    "root",
-                )));
+                );
             }
         }
         let allocd = self.sess.arenas.plugins.alloc(plugins) as &_;

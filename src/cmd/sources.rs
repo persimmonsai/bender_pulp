@@ -8,11 +8,11 @@ use std::io::Write;
 
 use clap::{ArgAction, Args};
 use indexmap::IndexSet;
+use miette::{IntoDiagnostic, Result, WrapErr};
 use serde_json;
 use tokio::runtime::Runtime;
 
 use crate::config::Validate;
-use crate::error::*;
 use crate::sess::{Session, SessionIo};
 use crate::target::TargetSet;
 
@@ -65,7 +65,7 @@ where
 
 /// Execute the `sources` subcommand.
 pub fn run(sess: &Session, args: &SourcesArgs) -> Result<()> {
-    let rt = Runtime::new()?;
+    let rt = Runtime::new().into_diagnostic()?;
     let io = SessionIo::new(sess);
     let mut srcs = rt.block_on(io.sources(false, &[]))?;
 
@@ -73,7 +73,8 @@ pub fn run(sess: &Session, args: &SourcesArgs) -> Result<()> {
         let stdout = std::io::stdout();
         let handle = stdout.lock();
         return serde_json::to_writer_pretty(handle, &srcs.flatten())
-            .map_err(|err| Error::chain("Failed to serialize source file manifest.", err));
+            .into_diagnostic()
+            .wrap_err("Failed to serialize source file manifest.");
     }
 
     // Filter the sources by target.
@@ -112,5 +113,7 @@ pub fn run(sess: &Session, args: &SourcesArgs) -> Result<()> {
         }
     };
     let _ = writeln!(std::io::stdout(),);
-    result.map_err(|cause| Error::chain("Failed to serialize source file manifest.", cause))
+    result
+        .into_diagnostic()
+        .wrap_err("Failed to serialize source file manifest.")
 }

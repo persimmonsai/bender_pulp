@@ -10,10 +10,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use futures::TryFutureExt;
+use miette::{miette, IntoDiagnostic, Result, WrapErr};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
-
-use crate::error::*;
 
 /// A git repository.
 ///
@@ -64,53 +63,54 @@ impl<'ctx> Git<'ctx> {
     pub async fn spawn(self, mut cmd: Command, check: bool) -> Result<String> {
         // acquire throttle
         let permit = self.throttle.clone().acquire_owned().await.unwrap();
-        let output = cmd.output().map_err(|cause| {
+        let output = cmd.output().await.map_err(|cause| {
+            // Check for the specific error condition
             if cause
                 .to_string()
                 .to_lowercase()
                 .contains("too many open files")
             {
-                eprintln!(
-                    "Please consider increasing your `ulimit -n`, e.g. by running `ulimit -n 4096`"
-                );
-                eprintln!("This is a known issue (#52).");
-                Error::chain("Failed to spawn child process.", cause)
+                miette!(
+                    help = "Please consider increasing your `ulimit -n` (e.g. `ulimit -n 4096`).",
+                    "System limit reached: Too many open files"
+                )
             } else {
-                Error::chain("Failed to spawn child process.", cause)
+                // Just a standard error wrapper
+                miette!(cause).wrap_err("Failed to spawn child process")
             }
         });
-        let result = output.and_then(|output| async move {
-            debugln!("git: {:?} in {:?}", cmd, self.path);
-            if output.status.success() || !check {
-                String::from_utf8(output.stdout).map_err(|cause| {
-                    Error::chain(
-                        format!(
-                            "Output of git command ({:?}) in directory {:?} is not valid UTF-8.",
-                            cmd, self.path
-                        ),
-                        cause,
+
+        drop(permit); // release throttle
+
+        // Unwrap the result from the previous step immediately
+        let output = output?;
+
+        debugln!("git: {:?} in {:?}", cmd, self.path);
+
+        if output.status.success() || !check {
+            // Success Case: Parse Stdout
+            String::from_utf8(output.stdout)
+                .into_diagnostic()
+                .wrap_err_with(|| {
+                    format!(
+                        "Output of git command ({:?}) in directory {:?} is not valid UTF-8.",
+                        cmd, self.path
                     )
                 })
-            } else {
-                let mut msg = format!("Git command ({:?}) in directory {:?}", cmd, self.path);
-                match output.status.code() {
-                    Some(code) => msg.push_str(&format!(" failed with exit code {}", code)),
-                    None => msg.push_str(" failed"),
-                };
-                match String::from_utf8(output.stderr) {
-                    Ok(txt) => {
-                        msg.push_str(":\n\n");
-                        msg.push_str(&txt);
-                    }
-                    Err(err) => msg.push_str(&format!(". Stderr is not valid UTF-8, {}.", err)),
-                };
-                Err(Error::new(msg))
-            }
-        });
-        let result = result.await;
-        // release throttle
-        drop(permit);
-        result
+        } else {
+            let exit_info = match output.status.code() {
+                Some(code) => format!("exit code {}", code),
+                None => "terminated by signal".to_string(),
+            };
+
+            // Return the error
+            Err(miette!(
+                "Git command ({:?}) in directory {:?} failed with {}.",
+                cmd,
+                self.path,
+                exit_info
+            ))
+        }
     }
 
     /// Assemble a command and schedule it for execution.
@@ -153,7 +153,11 @@ impl<'ctx> Git<'ctx> {
         let mut cmd = Command::new(self.git);
         cmd.current_dir(self.path);
         f(&mut cmd);
-        cmd.spawn()?.wait().await?;
+        cmd.spawn()
+            .into_diagnostic()?
+            .wait()
+            .await
+            .into_diagnostic()?;
         Ok(())
     }
 

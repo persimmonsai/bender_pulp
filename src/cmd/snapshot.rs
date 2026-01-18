@@ -8,12 +8,12 @@ use std::process::Command as SysCommand;
 
 use clap::Args;
 use indexmap::IndexMap;
+use miette::{bail, IntoDiagnostic, Result, WrapErr};
 use tokio::runtime::Runtime;
 
 use crate::cmd::clone::{get_path_subdeps, symlink_dir};
 use crate::config::{Dependency, Locked, LockedSource};
 use crate::diagnostic::Warnings;
-use crate::error::*;
 use crate::sess::{DependencySource, Session, SessionIo};
 
 /// Snapshot the cloned IPs from the working directory into the Bender.lock file
@@ -53,7 +53,8 @@ pub fn run(sess: &Session, args: &SnapshotArgs) -> Result<()> {
                             .arg("status")
                             .arg("--porcelain")
                             .current_dir(&dep_path)
-                            .output()?
+                            .output()
+                            .into_diagnostic()?
                             .stdout
                             .is_empty()
                             && !args.no_skip
@@ -69,22 +70,24 @@ pub fn run(sess: &Session, args: &SnapshotArgs) -> Result<()> {
                                 .arg("get-url")
                                 .arg("origin")
                                 .current_dir(&dep_path)
-                                .output()?
+                                .output()
+                                .into_diagnostic()?
                                 .stdout,
                         ) {
                             Ok(url) => url.trim_end_matches(&['\r', '\n'][..]).to_string(),
-                            Err(_) => Err(Error::new("Failed to get git url.".to_string()))?,
+                            Err(_) => bail!("Failed to get git url."),
                         };
                         let hash = match String::from_utf8(
                             SysCommand::new(&sess.config.git)
                                 .arg("rev-parse")
                                 .arg("HEAD")
                                 .current_dir(&dep_path)
-                                .output()?
+                                .output()
+                                .into_diagnostic()?
                                 .stdout,
                         ) {
                             Ok(hash) => hash.trim_end_matches(&['\r', '\n'][..]).to_string(),
-                            Err(_) => Err(Error::new("Failed to get git hash.".to_string()))?,
+                            Err(_) => bail!("Failed to get git hash."),
                         };
 
                         eprintln!("Snapshotting {} at {} from {}", name, hash, url);
@@ -99,13 +102,9 @@ pub fn run(sess: &Session, args: &SnapshotArgs) -> Result<()> {
     // Update the Bender.local to keep changes
     let local_path = sess.root.join("Bender.local");
     if local_path.exists() && !snapshot_list.is_empty() {
-        let local_file_str = match std::fs::read_to_string(&local_path) {
-            Err(why) => Err(Error::new(format!(
-                "Reading Bender.local failed with msg:\n\t{}",
-                why
-            )))?,
-            Ok(local_file_str) => local_file_str,
-        };
+        let local_file_str = std::fs::read_to_string(&local_path)
+            .into_diagnostic()
+            .wrap_err("Reading Bender.local failed")?;
         let mut new_str = String::new();
         if local_file_str.contains("overrides:") {
             let split = local_file_str.split('\n');
@@ -132,17 +131,14 @@ pub fn run(sess: &Session, args: &SnapshotArgs) -> Result<()> {
                 // Ensure trailing newline is not duplicated
                 new_str.pop();
             }
-            if let Err(why) = std::fs::write(local_path, new_str) {
-                Err(Error::new(format!(
-                    "Writing new Bender.local failed with msg:\n\t{}",
-                    why
-                )))?
-            }
+            std::fs::write(&local_path, new_str.clone())
+                .into_diagnostic()
+                .wrap_err("Writing new Bender.local failed")?;
             eprintln!("Bender.local updated with snapshots.");
         }
     }
 
-    let rt = Runtime::new()?;
+    let rt = Runtime::new().into_diagnostic()?;
     let io = SessionIo::new(sess);
     let mut path_subdeps: IndexMap<String, PathBuf> = IndexMap::new();
 
@@ -164,10 +160,11 @@ pub fn run(sess: &Session, args: &SnapshotArgs) -> Result<()> {
     // Update the Bender.lock file with the new hash
     use std::fs::File;
     let file = File::open(sess.root.join("Bender.lock"))
-        .map_err(|cause| Error::chain(format!("Cannot open lockfile {:?}.", sess.root), cause))?;
-    let mut locked: Locked = serde_yaml_ng::from_reader(&file).map_err(|cause| {
-        Error::chain(format!("Syntax error in lockfile {:?}.", sess.root), cause)
-    })?;
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Cannot open lockfile {:?}.", sess.root))?;
+    let mut locked: Locked = serde_yaml_ng::from_reader(&file)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Syntax error in lockfile {:?}.", sess.root))?;
 
     for (name, url, hash) in &snapshot_list {
         let mut mod_package = locked.packages.get_mut(name).unwrap().clone();
@@ -191,14 +188,16 @@ pub fn run(sess: &Session, args: &SnapshotArgs) -> Result<()> {
     }
 
     let file = File::create(sess.root.join("Bender.lock"))
-        .map_err(|cause| Error::chain(format!("Cannot create lockfile {:?}.", sess.root), cause))?;
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Cannot open lockfile {:?} for writing.", sess.root))?;
     serde_yaml_ng::to_writer(&file, &locked)
-        .map_err(|cause| Error::chain(format!("Cannot write lockfile {:?}.", sess.root), cause))?;
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Cannot write lockfile {:?}.", sess.root))?;
 
     if args.checkout {
         sess.load_locked(&locked)?;
 
-        let rt = Runtime::new()?;
+        let rt = Runtime::new().into_diagnostic()?;
         let io = SessionIo::new(sess);
         let _srcs = rt.block_on(io.sources(args.force, &[]))?;
     }
@@ -245,24 +244,23 @@ pub fn run(sess: &Session, args: &SnapshotArgs) -> Result<()> {
             // Check if there is something at the destination path that needs to be
             // removed.
             if link_path.exists() {
-                let meta = link_path.symlink_metadata().map_err(|cause| {
-                    Error::chain(
-                        format!("Failed to read metadata of path {:?}.", link_path),
-                        cause,
-                    )
-                })?;
+                let meta = link_path
+                    .symlink_metadata()
+                    .into_diagnostic()
+                    .wrap_err_with(|| {
+                        format!("Failed to read metadata of path {:?}.", link_path)
+                    })?;
                 if !meta.file_type().is_symlink() {
                     Warnings::SkippingPackageLink(pkg_name.clone(), link_path.to_path_buf()).emit();
                     continue;
                 }
                 if link_path.read_link().map(|d| d != pkg_path).unwrap_or(true) {
                     debugln!("main: removing existing link {:?}", link_path);
-                    std::fs::remove_file(link_path).map_err(|cause| {
-                        Error::chain(
-                            format!("Failed to remove symlink at path {:?}.", link_path),
-                            cause,
-                        )
-                    })?;
+                    std::fs::remove_file(link_path)
+                        .into_diagnostic()
+                        .wrap_err_with(|| {
+                            format!("Failed to remove symlink at path {:?}.", link_path)
+                        })?;
                 }
             }
 
@@ -270,9 +268,9 @@ pub fn run(sess: &Session, args: &SnapshotArgs) -> Result<()> {
             if !link_path.exists() {
                 stageln!("Linking", "{} ({:?})", pkg_name, link_path);
                 if let Some(parent) = link_path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|cause| {
-                        Error::chain(format!("Failed to create directory {:?}.", parent), cause)
-                    })?;
+                    std::fs::create_dir_all(parent)
+                        .into_diagnostic()
+                        .wrap_err_with(|| format!("Failed to create directory {:?}.", parent))?;
                 }
                 let previous_dir = match link_path.parent() {
                     Some(parent) => {
@@ -282,13 +280,10 @@ pub fn run(sess: &Session, args: &SnapshotArgs) -> Result<()> {
                     }
                     None => None,
                 };
-                symlink_dir(&pkg_path, link_path).map_err(|cause| {
-                    Error::chain(
-                        format!(
-                            "Failed to create symlink to {:?} at path {:?}.",
-                            pkg_path, link_path
-                        ),
-                        cause,
+                symlink_dir(&pkg_path, link_path).wrap_err_with(|| {
+                    format!(
+                        "Failed to create symlink to {:?} at path {:?}.",
+                        pkg_path, link_path
                     )
                 })?;
                 if let Some(d) = previous_dir {
