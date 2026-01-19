@@ -1,0 +1,10 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.25s
+     Running `target/debug/bender -d ../FlooNoC checkout`
+  [1m[32mCloned[39m[0m [1mapb[0m [2min 509ms[0m
+  [1m[32mCloned[39m[0m [1mcommon_verification[0m [2min 497ms[0m
+  [1m[32mCloned[39m[0m [1mcommon_cells[0m [2min 673ms[0m
+  [1m[32mCloned[39m[0m [1mtech_cells_generic[0m [2min 780ms[0m
+  [1m[32mCloned[39m[0m [1maxi_stream[0m [2min 479ms[0m
+  [1m[32mCloned[39m[0m [1mregister_interface[0m [2min 547ms[0m
+  [1m[32mCloned[39m[0m [1mobi[0m [2min 516ms[0m
+  [1m[32mCloned[39m[0m [1maxi_riscv_atomics[0m [2min 598ms[0m
