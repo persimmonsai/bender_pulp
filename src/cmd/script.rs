@@ -168,6 +168,17 @@ pub enum ScriptFormat {
         #[arg(long, action = ArgAction::Append, alias = "vcom-arg")]
         vhdl_args: Vec<String>,
     },
+    /// Synopsys formating export script (generates a python script)
+    #[command(name = "synopsys-export")]
+    SynopsysExport {
+        /// Pass arguments to verilog compilation calls
+        #[arg(long, action = ArgAction::Append, alias = "vlog-arg")]
+        verilog_args: Vec<String>,
+
+        /// Pass arguments to vhdl compilation calls
+        #[arg(long, action = ArgAction::Append, alias = "vcom-arg")]
+        vhdl_args: Vec<String>,
+    },
     /// Synopsys Formality script
     Formality,
     /// Riviera script
@@ -182,6 +193,9 @@ pub enum ScriptFormat {
     },
     /// Cadence Genus script
     Genus,
+    /// Cadence Genus export script (generates a python script)
+    #[command(name = "genus-export")]
+    GenusExport,
     /// Xilinx Vivado synthesis script
     Vivado {
         /// Do not change `simset` fileset
@@ -245,9 +259,11 @@ pub fn run(sess: &Session, args: &ScriptArgs) -> Result<()> {
             ScriptFormat::Vcs { .. } => vec!["vcs", "simulation"],
             ScriptFormat::Verilator { .. } => vec!["verilator", "synthesis"],
             ScriptFormat::Synopsys { .. } => vec!["synopsys", "synthesis"],
+            ScriptFormat::SynopsysExport { .. } => vec!["synopsys", "synthesis"],
             ScriptFormat::Formality => vec!["synopsys", "synthesis", "formality"],
             ScriptFormat::Riviera { .. } => vec!["riviera", "simulation"],
             ScriptFormat::Genus => vec!["genus", "synthesis"],
+            ScriptFormat::GenusExport => vec!["genus", "synthesis"],
             ScriptFormat::Vivado { .. } => concat(vivado_targets, &["synthesis"]),
             ScriptFormat::VivadoSim { .. } => concat(vivado_targets, &["simulation"]),
             ScriptFormat::Precision => vec!["precision", "fpga", "synthesis"],
@@ -358,6 +374,14 @@ pub fn run(sess: &Session, args: &ScriptArgs) -> Result<()> {
             tera_context.insert("vhdl_args", vhdl_args);
             include_str!("../script_fmt/synopsys_tcl.tera")
         }
+        ScriptFormat::SynopsysExport {
+            verilog_args,
+            vhdl_args,
+        } => {
+            tera_context.insert("verilog_args", verilog_args);
+            tera_context.insert("vhdl_args", vhdl_args);
+            include_str!("../script_fmt/synopsys_export_py.tera")
+        }
         ScriptFormat::Formality => include_str!("../script_fmt/formality_tcl.tera"),
         ScriptFormat::Riviera {
             vlog_args,
@@ -368,6 +392,7 @@ pub fn run(sess: &Session, args: &ScriptArgs) -> Result<()> {
             include_str!("../script_fmt/riviera_tcl.tera")
         }
         ScriptFormat::Genus => include_str!("../script_fmt/genus_tcl.tera"),
+        ScriptFormat::GenusExport => include_str!("../script_fmt/genus_export_py.tera"),
         ScriptFormat::Vivado { no_simset, only } | ScriptFormat::VivadoSim { no_simset, only } => {
             only_args = only.clone();
             tera_context.insert("vivado_filesets", &{
@@ -665,7 +690,7 @@ fn emit_template(
         "{}",
         Tera::default()
             .render_str(template, &tera_context)
-            .map_err(|e| { Error::chain("Failed to render template.", e) })?
+            .map_err(|e| { Error::chain(e.to_string(), e) })?
     );
 
     Ok(())
