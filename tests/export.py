@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# {{ HEADER_AUTOGEN }}
+# This script was generated automatically by bender.
 
 import os
 import sys
@@ -36,103 +36,58 @@ def get_file_hash(file_path):
     return hasher.hexdigest()
 
 def main():
-    parser = argparse.ArgumentParser(description="Export sources and generate Genus TCL script.")
+    parser = argparse.ArgumentParser(description="Export sources and generate Synopsys TCL script.")
     parser.add_argument("--outdir", default="export", help="Output directory for the exported files")
     args = parser.parse_args()
 
     outdir = args.outdir
     os.makedirs(outdir, exist_ok=True)
 
-    tcl_script_path = os.path.join(outdir, "genus_export.tcl")
+    tcl_script_path = os.path.join(outdir, "synopsys_export.tcl")
 
-    compilation_mode = "{{ compilation_mode }}"
+    # Python representation of bender data
+    verilog_args = []
+    vhdl_args = []
 
-{% if compilation_mode == 'separate' %}
+    compilation_mode = "separate"
+
+
     groups = [
-{% for group in srcs %}{% if group.file_type != '' %}
+
         {
-            "metadata": "{{ group.metadata }}",
-            "file_type": "{{ group.file_type }}",
+            "metadata": "Package(dummy) Target(*)",
+            "file_type": "verilog",
             "incdirs": [
-{% for incdir in group.incdirs %}
-                "{{ incdir }}",
-{% endfor %}
+
             ],
             "defines": [
-{% for define in group.defines %}
-                ("{{ define.0 }}", "{% if define.1 %}{{ define.1 }}{% endif %}"),
-{% endfor %}
+
+                ("TARGET_ALL", ""),
+
+                ("TARGET_SYNOPSYS", ""),
+
+                ("TARGET_SYNTHESIS", ""),
+
             ],
             "files": [
-{% for file in group.files %}
-                ("{{ file.file }}", "{% if file.comment %}{{ file.comment }}{% endif %}"),
-{% endfor %}
+
+                ("/home/uge/Development/bender_pulp/tests/foo.v", ""),
+
             ],
         },
-{% endif %}{% endfor %}
-    ]
-{% else %}
-    groups = []
-    
-    # Common compilation mode
-    all_verilog = [
-{% for file in all_verilog %}
-        ("{{ file.file }}", "{% if file.comment %}{{ file.comment }}{% endif %}"),
-{% endfor %}
-    ]
-    all_vhdl = [
-{% for file in all_vhdl %}
-        ("{{ file.file }}", "{% if file.comment %}{{ file.comment }}{% endif %}"),
-{% endfor %}
+
     ]
 
-    all_incdirs = [
-{% for incdir in all_incdirs %}
-        "{{ incdir }}",
-{% endfor %}
-    ]
-
-    all_defines = [
-{% for define in all_defines %}
-        ("{{ define.0 }}", "{% if define.1 %}{{ define.1 }}{% endif %}"),
-{% endfor %}
-    ]
-
-    if all_verilog:
-        groups.append({
-            "metadata": "Common Verilog",
-            "file_type": "verilog",
-            "incdirs": all_incdirs,
-            "defines": all_defines,
-            "files": all_verilog,
-        })
-    
-    if all_vhdl:
-        groups.append({
-            "metadata": "Common VHDL",
-            "file_type": "vhdl",
-            "incdirs": [],
-            "defines": [], 
-            "files": all_vhdl,
-        })
-{% endif %}
 
     file_map = {}
     incdir_map = {}
 
     with open(tcl_script_path, "w") as tcl:
-        tcl.write("# {{ HEADER_AUTOGEN }}\n")
-        tcl.write("if [ info exists search_path ] {\n")
-        tcl.write("    set search_path_initial $search_path\n")
-        tcl.write("} else {\n")
-        tcl.write("    set search_path_initial {}\n")
-        tcl.write("}\n")
+        tcl.write("# This script was generated automatically by bender.\n")
+        tcl.write("set search_path_initial $search_path\n")
 
         for group in groups:
-{% if source_annotations %}
-            if group.get("metadata"):
-                tcl.write(f"# {group['metadata']}\n")
-{% endif %}
+
             tcl.write("set search_path $search_path_initial\n")
 
             for incdir in group["incdirs"]:
@@ -148,32 +103,31 @@ def main():
 
                 tcl.write(f"lappend search_path [file join [file dirname [info script]] {incdir_map[incdir]}]\n")
 
-            tcl.write("set_db init_hdl_search_path $search_path\n\n")
 
-{% if abort_on_error %}
-            tcl.write("if {[catch { ")
-{% endif %}
+            tcl.write("if {0 == [")
+
             
             if group["file_type"] == "verilog":
-                tcl.write("read_hdl -language sv \\\n")
+                tcl.write("analyze -format sv ")
+                for arg in verilog_args:
+                    tcl.write(f"{arg} ")
             elif group["file_type"] == "vhdl":
-                tcl.write("read_hdl -language vhdl \\\n")
+                tcl.write("analyze -format vhdl ")
+                for arg in vhdl_args:
+                    tcl.write(f"{arg} ")
 
-{% raw %}
+
             for k, v in group["defines"]:
                 if v:
-                    tcl.write(f"    -define {{{k}={v}}} \\\n")
+                    tcl.write(f"-define {{{k}={v}}} ")
                 else:
-                    tcl.write(f"    -define {{{k}}} \\\n")
-{% endraw %}
+                    tcl.write(f"-define {{{k}}} ")
 
-            tcl.write("    [list \\\n")
+
+            tcl.write("[list \\\n")
 
             for file_path, comment in group["files"]:
-{% if source_annotations %}
-                if comment:
-                    tcl.write(f"        # {comment}\n")
-{% endif %}
+
                 if file_path not in file_map:
                     new_file_dir_name = get_file_hash(file_path)[:16]
                     new_file_dir_path = os.path.join(outdir, new_file_dir_name)
@@ -188,13 +142,11 @@ def main():
                         open(new_file_path, "w").close()
                     file_map[file_path] = os.path.join(new_file_dir_name, basename)
 
-                tcl.write(f"        [file join [file dirname [info script]] {file_map[file_path]}] \\\n")
+                tcl.write(f"    [file join [file dirname [info script]] {file_map[file_path]}] \\\n")
 
-{% if abort_on_error %}
-            tcl.write("    ]}]} {return 1}\n")
-{% else %}
-            tcl.write("    ]\n")
-{% endif %}
+
+            tcl.write("]]} {return 1}\n")
+
 
         if not groups:
             # If there's no files at all, still valid

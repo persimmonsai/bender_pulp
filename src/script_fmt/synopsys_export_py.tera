@@ -5,7 +5,35 @@ import os
 import sys
 import shutil
 import argparse
-import uuid
+import hashlib
+
+def get_dir_hash(dir_path):
+    hasher = hashlib.sha256()
+    if not os.path.exists(dir_path):
+        return hasher.hexdigest()
+    for root, dirs, files in os.walk(dir_path, topdown=True):
+        dirs.sort()
+        for name in sorted(files):
+            file_path = os.path.join(root, name)
+            try:
+                with open(file_path, "rb") as f:
+                    rel_path = os.path.relpath(file_path, dir_path)
+                    hasher.update(rel_path.encode('utf-8'))
+                    hasher.update(f.read())
+            except OSError:
+                pass
+    return hasher.hexdigest()
+
+def get_file_hash(file_path):
+    hasher = hashlib.sha256()
+    if not os.path.exists(file_path):
+        return hasher.hexdigest()
+    try:
+        with open(file_path, "rb") as f:
+            hasher.update(f.read())
+    except OSError:
+        pass
+    return hasher.hexdigest()
 
 def main():
     parser = argparse.ArgumentParser(description="Export sources and generate Synopsys TCL script.")
@@ -109,7 +137,7 @@ def main():
 
             for incdir in group["incdirs"]:
                 if incdir not in incdir_map:
-                    new_incdir_name = uuid.uuid4().hex
+                    new_incdir_name = get_dir_hash(incdir)[:16]
                     new_incdir_path = os.path.join(outdir, new_incdir_name)
                     if os.path.exists(incdir):
                         shutil.copytree(incdir, new_incdir_path)
@@ -149,7 +177,7 @@ def main():
                     tcl.write(f"    # {comment}\n")
 {% endif %}
                 if file_path not in file_map:
-                    new_file_dir_name = uuid.uuid4().hex
+                    new_file_dir_name = get_file_hash(file_path)[:16]
                     new_file_dir_path = os.path.join(outdir, new_file_dir_name)
                     os.makedirs(new_file_dir_path, exist_ok=True)
                     basename = os.path.basename(file_path)
