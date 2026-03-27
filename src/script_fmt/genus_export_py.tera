@@ -7,11 +7,16 @@ import shutil
 import argparse
 import hashlib
 
-def get_dir_hash(dir_path):
+def get_dir_hash(dir_path, outdir):
     hasher = hashlib.sha256()
     if not os.path.exists(dir_path):
         return hasher.hexdigest()
+    
+    abs_outdir = os.path.abspath(outdir)
+    
     for root, dirs, files in os.walk(dir_path, topdown=True):
+        dirs[:] = [d for d in dirs if d not in ('.git', '.bender', '__pycache__') and 
+                   not os.path.abspath(os.path.join(root, d)).startswith(abs_outdir)]
         dirs.sort()
         for name in sorted(files):
             file_path = os.path.join(root, name)
@@ -137,10 +142,10 @@ def main():
 
             for incdir in group["incdirs"]:
                 if incdir not in incdir_map:
-                    new_incdir_name = get_dir_hash(incdir)[:16]
+                    new_incdir_name = get_dir_hash(incdir, outdir)[:16]
                     new_incdir_path = os.path.join(outdir, new_incdir_name)
                     if os.path.exists(incdir):
-                        shutil.copytree(incdir, new_incdir_path)
+                        shutil.copytree(incdir, new_incdir_path, ignore=shutil.ignore_patterns('.git', '.bender', '__pycache__'), dirs_exist_ok=True)
                     else:
                         print(f"Warning: include dir {incdir} does not exist", file=sys.stderr)
                         os.makedirs(new_incdir_path, exist_ok=True)
