@@ -121,6 +121,47 @@ impl<'ctx> SourceGroup<'ctx> {
         SourceGroup { files, ..self }
     }
 
+    /// Apply passed defines to source groups matching specific packages.
+    ///
+    /// Takes a map of package_name -> Vec<(define_name, Option<define_value>)>
+    /// and injects the defines into source groups for those packages.
+    pub fn apply_passed_defines(
+        &self,
+        passed_defines: &IndexMap<String, Vec<(String, Option<String>)>>,
+    ) -> SourceGroup<'ctx> {
+        let mut defines = self.defines.clone();
+
+        // If this group belongs to a package that has passed defines, merge them
+        if let Some(pkg) = self.package {
+            if let Some(pkg_defines) = passed_defines.get(pkg) {
+                for (name, value) in pkg_defines {
+                    // Leak the value string to get a 'static lifetime, which satisfies 'ctx.
+                    // This is acceptable because passed defines are created once per session.
+                    let leaked_value: Option<&'static str> =
+                        value.as_ref().map(|v| &*Box::leak(v.clone().into_boxed_str()));
+                    defines.insert(name.clone(), leaked_value);
+                }
+            }
+        }
+
+        let files = self
+            .files
+            .iter()
+            .map(|file| match file {
+                SourceFile::Group(group) => {
+                    SourceFile::Group(Box::new(group.apply_passed_defines(passed_defines)))
+                }
+                other => other.clone(),
+            })
+            .collect();
+
+        SourceGroup {
+            defines,
+            files,
+            ..self.clone()
+        }
+    }
+
     /// Filter the sources, keeping only the ones that apply to a target.
     pub fn filter_targets(&self, targets: &TargetSet) -> Option<SourceGroup<'ctx>> {
         let all_targets = match self.package {

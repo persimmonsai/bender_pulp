@@ -149,25 +149,32 @@ pub fn get_parent_array(
                     Dependency::Version {
                         target: targetspec,
                         pass_targets: tgts,
+                        pass_defines: defs,
                         ..
                     }
                     | Dependency::Path {
                         target: targetspec,
                         pass_targets: tgts,
+                        pass_defines: defs,
                         ..
                     }
                     | Dependency::GitRevision {
                         target: targetspec,
                         pass_targets: tgts,
+                        pass_defines: defs,
                         ..
                     }
                     | Dependency::GitVersion {
                         target: targetspec,
                         pass_targets: tgts,
+                        pass_defines: defs,
                         ..
                     } => {
                         let mut tgts = tgts.iter().map(|t| t.to_string()).collect::<Vec<_>>();
                         tgts.insert(0, targetspec.to_string());
+                        if !defs.is_empty() {
+                            tgts.push(format!("defines: {:?}", defs.iter().map(|d| d.to_string()).collect::<Vec<_>>()));
+                        }
                         tgts
                     }
                 },
@@ -210,26 +217,33 @@ pub fn get_parent_array(
                                 Dependency::Version {
                                     target: targetspec,
                                     pass_targets: tgts,
+                                    pass_defines: defs,
                                     ..
                                 }
                                 | Dependency::Path {
                                     target: targetspec,
                                     pass_targets: tgts,
+                                    pass_defines: defs,
                                     ..
                                 }
                                 | Dependency::GitRevision {
                                     target: targetspec,
                                     pass_targets: tgts,
+                                    pass_defines: defs,
                                     ..
                                 }
                                 | Dependency::GitVersion {
                                     target: targetspec,
                                     pass_targets: tgts,
+                                    pass_defines: defs,
                                     ..
                                 } => {
                                     let mut tgts =
                                         tgts.iter().map(|t| t.to_string()).collect::<Vec<_>>();
                                     tgts.insert(0, targetspec.to_string());
+                                    if !defs.is_empty() {
+                                        tgts.push(format!("defines: {:?}", defs.iter().map(|d| d.to_string()).collect::<Vec<_>>()));
+                                    }
                                     tgts
                                 }
                             },

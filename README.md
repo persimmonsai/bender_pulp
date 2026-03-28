@@ -150,6 +150,24 @@ dependencies:
       - {target: 64bit, pass: "cv64a6_imafdcv_sv39"}
       - {target: 32bit, pass: "cv32a6_imac_sv32"}
 
+  # Git revision dependency, passing preprocessor defines to a dependency.
+  # Simple string form: pass a valueless define (or "NAME=VALUE" for valued defines).
+  idma: { git: "https://github.com/example/idma.git", rev: "main", pass_defines: ["MY_FEATURE"] }
+
+  # Passing defines with values and conditional target filtering:
+  hbm_adapter:
+    git: "https://github.com/example/hbm_adapter.git"
+    rev: v1-release
+    pass_defines:
+      # Valueless define (always passed)
+      - "ENABLE_HBM"
+      # Define with a value (always passed)
+      - {define: "DATA_WIDTH", value: "64"}
+      # Conditional define (only when target "synthesis" is active)
+      - {target: synthesis, define: "SYNTH_ONLY"}
+      # Conditional define with value
+      - {target: asic, define: "TECH_NODE", value: "7nm"}
+
 # Freeze any dependency updates. Optional. False if omitted.
 # Useful for chip packages. Once the chip is in final tapeout mode, and
 # dependency updates would require disastrous amounts of re-verification.

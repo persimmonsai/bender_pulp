@@ -110,6 +110,7 @@ impl<'ctx> DependencyResolver<'ctx> {
                                     target: TargetSpec::Wildcard,
                                     path: dir.unwrap().path(),
                                     pass_targets: vec![],
+                                    pass_defines: vec![],
                                 },
                             );
                         } else if !(SysCommand::new(&self.sess.config.git) // If not in a clean state
@@ -127,6 +128,7 @@ impl<'ctx> DependencyResolver<'ctx> {
                                     target: TargetSpec::Wildcard,
                                     path: dir.unwrap().path(),
                                     pass_targets: vec![],
+                                    pass_defines: vec![],
                                 },
                             );
                         }
@@ -372,6 +374,7 @@ impl<'ctx> DependencyResolver<'ctx> {
                         target: TargetSpec::Wildcard,
                         path: p.clone(),
                         pass_targets: Vec::new(),
+                        pass_defines: Vec::new(),
                     },
                     LockedSource::Registry(..) => {
                         unreachable!("Registry dependencies not yet supported.");
@@ -392,6 +395,7 @@ impl<'ctx> DependencyResolver<'ctx> {
                                     }],
                                 },
                                 pass_targets: Vec::new(),
+                                pass_defines: Vec::new(),
                             }
                         } else {
                             config::Dependency::GitRevision {
@@ -408,6 +412,7 @@ impl<'ctx> DependencyResolver<'ctx> {
                                     }
                                 },
                                 pass_targets: Vec::new(),
+                                pass_defines: Vec::new(),
                             }
                         }
                     }
@@ -438,6 +443,7 @@ impl<'ctx> DependencyResolver<'ctx> {
                     target: TargetSpec::Wildcard,
                     path: p,
                     pass_targets: Vec::new(),
+                    pass_defines: Vec::new(),
                 },
                 DependencySource::Git(u) => match &cnstr {
                     DependencyConstraint::Version(v) => config::Dependency::GitVersion {
@@ -445,12 +451,14 @@ impl<'ctx> DependencyResolver<'ctx> {
                         url: u,
                         version: v.clone(),
                         pass_targets: Vec::new(),
+                        pass_defines: Vec::new(),
                     },
                     DependencyConstraint::Revision(r) => config::Dependency::GitRevision {
                         target: TargetSpec::Wildcard,
                         url: u,
                         rev: r.clone(),
                         pass_targets: Vec::new(),
+                        pass_defines: Vec::new(),
                     },
                     _ => unreachable!(),
                 },

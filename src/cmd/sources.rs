@@ -9,7 +9,7 @@ use std::io::Write;
 
 use clap::{ArgAction, Args};
 use futures::future::join_all;
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use serde_json;
 use tokio::runtime::Runtime;
 
@@ -115,6 +115,18 @@ pub fn run(sess: &Session, args: &SourcesArgs) -> Result<()> {
     };
 
     srcs = srcs.filter_targets(&targets).unwrap_or_default();
+
+    // Apply passed defines
+    let passed_defines = get_passed_defines(
+        sess,
+        &rt,
+        &io,
+        &targets,
+        &packages,
+    )?;
+    if !passed_defines.is_empty() {
+        srcs = srcs.apply_passed_defines(&passed_defines);
+    }
 
     srcs = srcs.filter_packages(&packages).unwrap_or_default();
 
@@ -245,4 +257,112 @@ pub fn get_passed_targets(
             .cloned()
             .collect(),
     ))
+}
+
+/// Get the defines passed to dependencies from calling packages.
+pub fn get_passed_defines(
+    sess: &Session,
+    rt: &Runtime,
+    io: &SessionIo,
+    global_targets: &TargetSet,
+    used_packages: &IndexSet<String>,
+) -> Result<IndexMap<String, Vec<(String, Option<String>)>>> {
+    let mut result: IndexMap<String, Vec<(String, Option<String>)>> = IndexMap::new();
+
+    // Process root manifest
+    if used_packages.contains(&sess.manifest.package.name) {
+        sess.manifest
+            .dependencies
+            .iter()
+            .for_each(|(name, dep)| match dep {
+                Dependency::Version {
+                    target: filter,
+                    pass_defines: defs,
+                    ..
+                }
+                | Dependency::Path {
+                    target: filter,
+                    pass_defines: defs,
+                    ..
+                }
+                | Dependency::GitRevision {
+                    target: filter,
+                    pass_defines: defs,
+                    ..
+                }
+                | Dependency::GitVersion {
+                    target: filter,
+                    pass_defines: defs,
+                    ..
+                } => {
+                    for d in defs {
+                        if TargetSpec::All(BTreeSet::from([filter.clone(), d.target.clone()]))
+                            .matches(&global_targets.reduce_for_dependency(name))
+                        {
+                            result
+                                .entry(name.clone())
+                                .or_default()
+                                .push((d.define.clone(), d.value.clone()));
+                        }
+                    }
+                }
+            });
+    }
+
+    // Process dependency manifests
+    for pkgs in sess.packages().iter().rev() {
+        let manifests = rt
+            .block_on(join_all(
+                pkgs.iter()
+                    .map(|pkg| io.dependency_manifest(*pkg, false, &[])),
+            ))
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        manifests.into_iter().flatten().for_each(|manifest| {
+            let pkg_name = &manifest.package.name;
+            if used_packages.contains(pkg_name) {
+                manifest
+                    .dependencies
+                    .iter()
+                    .for_each(|(name, dep)| match dep {
+                        Dependency::Version {
+                            target: filter,
+                            pass_defines: defs,
+                            ..
+                        }
+                        | Dependency::Path {
+                            target: filter,
+                            pass_defines: defs,
+                            ..
+                        }
+                        | Dependency::GitRevision {
+                            target: filter,
+                            pass_defines: defs,
+                            ..
+                        }
+                        | Dependency::GitVersion {
+                            target: filter,
+                            pass_defines: defs,
+                            ..
+                        } => {
+                            for d in defs {
+                                if TargetSpec::All(BTreeSet::from([
+                                    filter.clone(),
+                                    d.target.clone(),
+                                ]))
+                                .matches(&global_targets.reduce_for_dependency(pkg_name))
+                                {
+                                    result
+                                        .entry(name.clone())
+                                        .or_default()
+                                        .push((d.define.clone(), d.value.clone()));
+                                }
+                            }
+                        }
+                    })
+            };
+        });
+    }
+
+    Ok(result)
 }

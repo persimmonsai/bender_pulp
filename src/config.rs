@@ -108,6 +108,8 @@ pub enum Dependency {
         version: semver::VersionReq,
         /// Targets to pass to the dependency
         pass_targets: Vec<PassedTarget>,
+        /// Defines to pass to the dependency
+        pass_defines: Vec<PassedDefine>,
     },
     /// A local path dependency. The exact version of the dependency found at
     /// the given path will be used, regardless of any actual versioning
@@ -119,6 +121,8 @@ pub enum Dependency {
         path: PathBuf,
         /// Targets to pass to the dependency
         pass_targets: Vec<PassedTarget>,
+        /// Defines to pass to the dependency
+        pass_defines: Vec<PassedDefine>,
     },
     /// A git dependency specified by a revision.
     GitRevision {
@@ -130,6 +134,8 @@ pub enum Dependency {
         rev: String,
         /// Targets to pass to the dependency
         pass_targets: Vec<PassedTarget>,
+        /// Defines to pass to the dependency
+        pass_defines: Vec<PassedDefine>,
     },
     /// A git dependency specified by a version requirement. Works similarly to
     /// the `GitRevision`, but extracts all tags of the form `v.*` from the
@@ -143,6 +149,8 @@ pub enum Dependency {
         version: semver::VersionReq,
         /// Targets to pass to the dependency
         pass_targets: Vec<PassedTarget>,
+        /// Defines to pass to the dependency
+        pass_defines: Vec<PassedDefine>,
     },
 }
 
@@ -153,10 +161,12 @@ impl PrefixPaths for Dependency {
                 target,
                 path,
                 pass_targets,
+                pass_defines,
             } => Dependency::Path {
                 target,
                 path: path.prefix_paths(prefix)?,
                 pass_targets,
+                pass_defines,
             },
             v => v,
         })
@@ -174,11 +184,13 @@ impl Serialize for Dependency {
                 ref target,
                 ref version,
                 ref pass_targets,
+                ref pass_defines,
             } => {
-                let mut map = serializer.serialize_map(Some(3))?;
+                let mut map = serializer.serialize_map(Some(4))?;
                 map.serialize_entry("target", target)?;
                 map.serialize_entry("version", &format!("{}", version))?;
                 map.serialize_entry("pass_targets", pass_targets)?;
+                map.serialize_entry("pass_defines", pass_defines)?;
                 map.end()
             }
             // format!("{}, {:?}", version, pass_targets).serialize(serializer),
@@ -186,11 +198,13 @@ impl Serialize for Dependency {
                 ref target,
                 ref path,
                 ref pass_targets,
+                ref pass_defines,
             } => {
-                let mut map = serializer.serialize_map(Some(3))?;
+                let mut map = serializer.serialize_map(Some(4))?;
                 map.serialize_entry("target", target)?;
                 map.serialize_entry("path", path)?;
                 map.serialize_entry("pass_targets", pass_targets)?;
+                map.serialize_entry("pass_defines", pass_defines)?;
                 map.end()
             }
 
@@ -200,12 +214,14 @@ impl Serialize for Dependency {
                 ref url,
                 ref rev,
                 ref pass_targets,
+                ref pass_defines,
             } => {
-                let mut map = serializer.serialize_map(Some(4))?;
+                let mut map = serializer.serialize_map(Some(5))?;
                 map.serialize_entry("target", target)?;
                 map.serialize_entry("git", url)?;
                 map.serialize_entry("rev", rev)?;
                 map.serialize_entry("pass_targets", pass_targets)?;
+                map.serialize_entry("pass_defines", pass_defines)?;
                 map.end()
             }
             Dependency::GitVersion {
@@ -213,12 +229,14 @@ impl Serialize for Dependency {
                 ref url,
                 ref version,
                 ref pass_targets,
+                ref pass_defines,
             } => {
-                let mut map = serializer.serialize_map(Some(4))?;
+                let mut map = serializer.serialize_map(Some(5))?;
                 map.serialize_entry("target", target)?;
                 map.serialize_entry("git", url)?;
                 map.serialize_entry("version", &format!("{}", version))?;
                 map.serialize_entry("pass_targets", pass_targets)?;
+                map.serialize_entry("pass_defines", pass_defines)?;
                 map.end()
             }
         }
@@ -700,6 +718,8 @@ pub struct PartialDependency {
     upstream_name: Option<String>,
     /// Targets to pass to the dependency
     pass_targets: Option<Vec<StringOrStruct<PartialPassedTarget>>>,
+    /// Defines to pass to the dependency
+    pass_defines: Option<Vec<StringOrStruct<PartialPassedDefine>>>,
     /// Unknown extra fields
     #[serde(flatten)]
     extra: HashMap<String, Value>,
@@ -744,6 +764,12 @@ impl Validate for PartialDependency {
             .into_iter()
             .map(|s| s.validate(vctx))
             .collect::<Result<Vec<_>>>()?;
+        let pass_defines = self
+            .pass_defines
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.validate(vctx))
+            .collect::<Result<Vec<_>>>()?;
         let version = self
             .version
             .map(|v| {
@@ -779,6 +805,7 @@ impl Validate for PartialDependency {
                         url: default_remote.url.replace("{}", git_name),
                         version,
                         pass_targets,
+                        pass_defines,
                     })
                 } else {
                     Err(Error::new(
@@ -798,6 +825,7 @@ impl Validate for PartialDependency {
                         url: remote.url.replace("{}", git_name),
                         version,
                         pass_targets,
+                        pass_defines,
                     })
                 } else {
                     Err(Error::new(format!(
@@ -815,6 +843,7 @@ impl Validate for PartialDependency {
                 url: git,
                 version,
                 pass_targets,
+                pass_defines,
             }),
             // Git dependencies with revisions, e.g.:
             // ```yaml
@@ -826,6 +855,7 @@ impl Validate for PartialDependency {
                 url: git,
                 rev,
                 pass_targets,
+                pass_defines,
             }),
             // Path dependencies, e.g.:
             // ```yaml
@@ -835,6 +865,7 @@ impl Validate for PartialDependency {
                 target,
                 path: env_path_from_string(path)?,
                 pass_targets,
+                pass_defines,
             }),
             (_, _, Some(_), Some(_), _) => Err(Error::new(format!(
                 "Dependency `{}` cannot specify both `version` and `rev` fields.",
@@ -1912,6 +1943,67 @@ impl FromStr for PartialPassedTarget {
 impl fmt::Display for PassedTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "target: `{}`: `{}`", self.target, self.pass)
+    }
+}
+
+/// A passed define
+#[derive(Clone, Default, Serialize, Debug, Hash, PartialEq, Eq)]
+pub struct PassedDefine {
+    /// Target filter (when to apply this define)
+    pub target: TargetSpec,
+    /// Define name
+    pub define: String,
+    /// Optional define value
+    pub value: Option<String>,
+}
+
+/// A partial passed define
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PartialPassedDefine {
+    /// Filtering target specification
+    pub target: Option<TargetSpec>,
+    /// Define name
+    pub define: Option<String>,
+    /// Optional define value
+    pub value: Option<String>,
+}
+
+impl Validate for PartialPassedDefine {
+    type Output = PassedDefine;
+    type Error = Error;
+    fn validate(self, _vctx: &ValidationContext) -> Result<PassedDefine> {
+        Ok(PassedDefine {
+            target: self.target.unwrap_or_default(),
+            define: match self.define {
+                Some(d) => d,
+                None => return Err(Error::new("passed define missing define name")),
+            },
+            value: self.value,
+        })
+    }
+}
+
+impl FromStr for PartialPassedDefine {
+    type Err = Void;
+    fn from_str(s: &str) -> std::result::Result<Self, Void> {
+        // Support "NAME=VALUE" or just "NAME"
+        let mut parts = s.splitn(2, '=');
+        let define = parts.next().map(|s| s.to_string());
+        let value = parts.next().map(|s| s.to_string());
+        Ok(PartialPassedDefine {
+            target: None,
+            define,
+            value,
+        })
+    }
+}
+
+impl fmt::Display for PassedDefine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.value {
+            Some(v) => write!(f, "target: `{}`: `{}`=`{}`", self.target, self.define, v),
+            None => write!(f, "target: `{}`: `{}`", self.target, self.define),
+        }
     }
 }
 

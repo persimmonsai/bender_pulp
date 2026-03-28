@@ -12,7 +12,7 @@ use serde::Serialize;
 use tera::{Context, Tera};
 use tokio::runtime::Runtime;
 
-use crate::cmd::sources::get_passed_targets;
+use crate::cmd::sources::{get_passed_defines, get_passed_targets};
 use crate::config::{Validate, ValidationContext};
 use crate::diagnostic::Warnings;
 use crate::error::*;
@@ -311,6 +311,18 @@ pub fn run(sess: &Session, args: &ScriptArgs) -> Result<()> {
     };
 
     srcs = srcs.filter_targets(&targets).unwrap_or_default();
+
+    // Apply passed defines
+    let passed_defines = get_passed_defines(
+        sess,
+        &rt,
+        &io,
+        &targets,
+        &packages,
+    )?;
+    if !passed_defines.is_empty() {
+        srcs = srcs.apply_passed_defines(&passed_defines);
+    }
 
     srcs = srcs.filter_packages(&packages).unwrap_or_default();
 

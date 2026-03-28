@@ -1237,6 +1237,7 @@ impl<'io, 'sess: 'io, 'ctx: 'sess> SessionIo<'sess, 'ctx> {
                         target: TargetSpec::Wildcard,
                         path: sub_dep_path.clone(),
                         pass_targets: Vec::new(),
+                        pass_defines: Vec::new(),
                     };
 
                     // Further dependencies
