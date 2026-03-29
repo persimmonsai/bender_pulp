@@ -175,7 +175,9 @@ impl<'ctx> Session<'ctx> {
         for (name, pkg) in &locked.packages {
             let src = match pkg.source {
                 config::LockedSource::Path(ref path) => DependencySource::Path(path.clone()),
-                config::LockedSource::Git(ref url) => DependencySource::Git(url.clone()),
+                config::LockedSource::Git(ref url) => {
+                    DependencySource::Git(DependencySource::normalize_git_url(url))
+                }
                 config::LockedSource::Registry(ref _ver) => DependencySource::Registry,
             };
             let id = deps.add(
@@ -474,10 +476,13 @@ impl<'ctx> Session<'ctx> {
 
     /// Get folder name of a git dependency with url
     pub fn git_db_name(&self, name: &str, url: &str) -> String {
+        // Normalize the URL to strip trailing .git so that equivalent URLs
+        // (with and without .git suffix) map to the same database directory.
+        let normalized = DependencySource::normalize_git_url(url);
         // Determine the name of the database as the given name and the first
         // 8 bytes (16 hex characters) of the URL's BLAKE2 hash.
         use blake2::{Blake2b512, Digest};
-        let hash = &format!("{:016x}", Blake2b512::digest(url.as_bytes()))[..16];
+        let hash = &format!("{:016x}", Blake2b512::digest(normalized.as_bytes()))[..16];
         let db_name = format!("{}-{}", name, hash);
         db_name
     }
@@ -1875,8 +1880,12 @@ impl<'a> From<&'a config::Dependency> for DependencySource {
     fn from(cfg: &'a config::Dependency) -> DependencySource {
         match cfg {
             config::Dependency::Path { path, .. } => DependencySource::Path(path.clone()),
-            config::Dependency::GitRevision { url, .. } => DependencySource::Git(url.clone()),
-            config::Dependency::GitVersion { url, .. } => DependencySource::Git(url.clone()),
+            config::Dependency::GitRevision { url, .. } => {
+                DependencySource::Git(DependencySource::normalize_git_url(url))
+            }
+            config::Dependency::GitVersion { url, .. } => {
+                DependencySource::Git(DependencySource::normalize_git_url(url))
+            }
             config::Dependency::Version { .. } => DependencySource::Registry,
         }
     }
@@ -1893,6 +1902,16 @@ impl fmt::Display for DependencySource {
 }
 
 impl DependencySource {
+    /// Normalize a git URL by stripping the trailing `.git` suffix.
+    ///
+    /// Both GitHub and GitLab treat URLs with and without the `.git` suffix as
+    /// aliases for the same repository. This normalization ensures that bender
+    /// considers them identical for dependency resolution, database naming, and
+    /// checkout path hashing.
+    pub fn normalize_git_url(url: &str) -> String {
+        url.strip_suffix(".git").unwrap_or(url).to_string()
+    }
+
     /// returns a string of the source
     pub fn to_str(&self) -> String {
         match *self {
