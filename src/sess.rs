@@ -2122,3 +2122,162 @@ pub struct Plugin {
     /// What binary implements the plugin.
     pub path: PathBuf,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // ── normalize_git_url ──────────────────────────────────────────────
+
+    #[test]
+    fn normalize_strips_dot_git_suffix() {
+        assert_eq!(
+            DependencySource::normalize_git_url("https://github.com/user/repo.git"),
+            "https://github.com/user/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_noop_without_dot_git() {
+        assert_eq!(
+            DependencySource::normalize_git_url("https://github.com/user/repo"),
+            "https://github.com/user/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_ssh_url_with_dot_git() {
+        assert_eq!(
+            DependencySource::normalize_git_url("git@github.com:user/repo.git"),
+            "git@github.com:user/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_ssh_url_without_dot_git() {
+        assert_eq!(
+            DependencySource::normalize_git_url("git@github.com:user/repo"),
+            "git@github.com:user/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_dot_github_in_path() {
+        // ".github" should NOT be stripped — only a trailing ".git" should be.
+        assert_eq!(
+            DependencySource::normalize_git_url("https://github.com/user/.github"),
+            "https://github.com/user/.github"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_dot_gitignore_in_path() {
+        assert_eq!(
+            DependencySource::normalize_git_url("https://github.com/user/.gitignore"),
+            "https://github.com/user/.gitignore"
+        );
+    }
+
+    #[test]
+    fn normalize_bare_dot_git() {
+        // Edge case: the entire URL is ".git"
+        assert_eq!(DependencySource::normalize_git_url(".git"), "");
+    }
+
+    #[test]
+    fn normalize_empty_string() {
+        assert_eq!(DependencySource::normalize_git_url(""), "");
+    }
+
+    #[test]
+    fn normalize_only_strips_once() {
+        // "repo.git.git" should become "repo.git" (only the trailing .git is stripped)
+        assert_eq!(
+            DependencySource::normalize_git_url("https://github.com/user/repo.git.git"),
+            "https://github.com/user/repo.git"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_trailing_slash() {
+        // A trailing slash means ".git" is not a suffix — should be left alone.
+        assert_eq!(
+            DependencySource::normalize_git_url("https://github.com/user/repo.git/"),
+            "https://github.com/user/repo.git/"
+        );
+    }
+
+    // ── DependencySource equality & hashing ────────────────────────────
+
+    fn hash_of<T: Hash>(val: &T) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        val.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn dependency_source_eq_after_normalization() {
+        let with_git =
+            DependencySource::Git(DependencySource::normalize_git_url("https://github.com/user/repo.git"));
+        let without_git =
+            DependencySource::Git(DependencySource::normalize_git_url("https://github.com/user/repo"));
+        assert_eq!(with_git, without_git);
+    }
+
+    #[test]
+    fn dependency_source_hash_after_normalization() {
+        let with_git =
+            DependencySource::Git(DependencySource::normalize_git_url("https://github.com/user/repo.git"));
+        let without_git =
+            DependencySource::Git(DependencySource::normalize_git_url("https://github.com/user/repo"));
+        assert_eq!(hash_of(&with_git), hash_of(&without_git));
+    }
+
+    // ── From<config::Dependency> normalization ─────────────────────────
+
+    #[test]
+    fn from_git_revision_normalizes_url() {
+        let dep = config::Dependency::GitRevision {
+            target: crate::target::TargetSpec::Wildcard,
+            url: "https://github.com/user/repo.git".into(),
+            rev: "main".into(),
+            pass_targets: vec![],
+        };
+        let src = DependencySource::from(&dep);
+        assert_eq!(src, DependencySource::Git("https://github.com/user/repo".into()));
+    }
+
+    #[test]
+    fn from_git_version_normalizes_url() {
+        let dep = config::Dependency::GitVersion {
+            target: crate::target::TargetSpec::Wildcard,
+            url: "https://github.com/user/repo.git".into(),
+            version: semver::VersionReq::parse(">=1.0.0").unwrap(),
+            pass_targets: vec![],
+        };
+        let src = DependencySource::from(&dep);
+        assert_eq!(src, DependencySource::Git("https://github.com/user/repo".into()));
+    }
+
+    #[test]
+    fn from_git_revision_and_version_yield_same_source() {
+        let rev_dep = config::Dependency::GitRevision {
+            target: crate::target::TargetSpec::Wildcard,
+            url: "https://github.com/user/repo.git".into(),
+            rev: "abc123".into(),
+            pass_targets: vec![],
+        };
+        let ver_dep = config::Dependency::GitVersion {
+            target: crate::target::TargetSpec::Wildcard,
+            url: "https://github.com/user/repo".into(),
+            version: semver::VersionReq::parse(">=1.0.0").unwrap(),
+            pass_targets: vec![],
+        };
+        let src_rev = DependencySource::from(&rev_dep);
+        let src_ver = DependencySource::from(&ver_dep);
+        // Both should produce the same DependencySource (same normalized URL)
+        assert_eq!(src_rev, src_ver);
+    }
+}
